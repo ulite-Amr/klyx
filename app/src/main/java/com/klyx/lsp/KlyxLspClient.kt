@@ -16,6 +16,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
 
 internal class DiagnosticsAggregator {
@@ -96,11 +98,19 @@ internal class KlyxLspClient(
 
     override suspend fun publishDiagnostics(params: PublishDiagnosticsParams) {
         if (disposed) return
+        val count = params.diagnostics.size
+        if (count > 0) {
+            Log.d("LspClient", "publishDiagnostics: $serverId -> ${params.uri} ($count items)")
+        }
         publish(params.uri, params.diagnostics)
     }
 
     private suspend fun publish(uri: String, diagnostics: List<Diagnostic>) {
-        val editorState = aggregator.editorFor(uri) ?: return
+        val editorState = aggregator.editorFor(uri)
+        if (editorState == null) {
+            Log.w("LspClient", "publishDiagnostics: no editor for uri=$uri (registered: ${registeredUris})")
+            return
+        }
         val text = editorState.text
 
         val regions = diagnostics.mapNotNull { diagnostic ->
@@ -125,6 +135,9 @@ internal class KlyxLspClient(
         }
 
         aggregator.publish(uri, serverId, regions)
+        if (regions.isNotEmpty()) {
+            Log.d("LspClient", "Applied ${regions.size} diagnostics to $uri from $serverId")
+        }
     }
 
     private fun Content.clampedCharIndex(position: Position): Int {
@@ -175,7 +188,15 @@ internal class KlyxLspClient(
     }
 
     override suspend fun configuration(params: ConfigurationParams): List<LSPAny> {
-        return params.items.map { JsonNull }
+        Log.d("LspClient", "configuration request: ${params.items.map { it.section }}")
+        return params.items.map { item ->
+            when {
+                // rust-analyzer sends workspace/configuration to get its settings
+                // Return empty object so it uses defaults instead of null
+                item.section?.startsWith("rust-analyzer") == true -> JsonObject(emptyMap())
+                else -> JsonNull
+            }
+        }
     }
 
     override suspend fun applyEdit(params: ApplyWorkspaceEditParams): ApplyWorkspaceEditResult {

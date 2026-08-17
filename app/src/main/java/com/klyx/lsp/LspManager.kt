@@ -3,7 +3,6 @@ package com.klyx.lsp
 import android.net.Uri
 import android.util.Log
 import androidx.collection.LruCache
-import androidx.core.net.toFile
 import com.klyx.api.InternalKlyxApi
 import com.klyx.api.data.file.KxFile
 import com.klyx.api.lsp.LanguageServerProvider
@@ -103,14 +102,33 @@ class LspManager(
         editorState: CodeEditorState,
         baseLanguage: Language
     ) {
-        val providers = registry.getProviders(file)
+        var providers = registry.getProviders(file)
         if (providers.isEmpty()) {
-            withContext(Dispatchers.Main) { editorState.editorLanguage = baseLanguage }
-            return
+            // Plugin may not have registered yet; wait briefly and retry
+            Log.d("LspManager", "No providers for ${file.extension}, waiting for plugin registration...")
+            kotlinx.coroutines.delay(500)
+            providers = registry.getProviders(file)
+            if (providers.isEmpty()) {
+                Log.d("LspManager", "Still no providers after retry, falling back to base language")
+                withContext(Dispatchers.Main) { editorState.editorLanguage = baseLanguage }
+                return
+            }
+            Log.d("LspManager", "Found ${providers.size} provider(s) after retry")
         }
 
         val keys = providers.map { ServerKey(projectUri?.toString(), file.languageId, it.id) }
-        val documentUri = file.uri.toString()
+
+        // Language servers run inside the terminal rootfs and only accept file://
+        // URIs pointing at paths visible there. Translate the tab's (possibly
+        // content://) URI once and use the result for all LSP traffic.
+        val lspUris = resolveLspUris(file)
+        val documentUri = lspUris.serverUri
+        if (documentUri == null) {
+            Log.w("LspManager", "No resolvable real path for ${file.uri}; LSP disabled for this file")
+            activityStore.log(file.name, "LSP disabled: no real path for ${file.uri}")
+            withContext(Dispatchers.Main) { editorState.editorLanguage = baseLanguage }
+            return
+        }
 
         withContext(Dispatchers.IO) {
             try {
@@ -124,7 +142,10 @@ class LspManager(
                     providers.zip(keys).map { (reg, key) ->
                         async {
                             key to runCatching {
-                                ensureServerInstance(key, reg.provider, projectUri)
+                                Log.d("LspManager", "Starting server for ${key.languageId} with provider ${key.providerId}")
+                                ensureServerInstance(key, reg.provider, projectUri, file)
+                            }.onFailure { e ->
+                                Log.e("LspManager", "Failed to start server for ${key.languageId}", e)
                             }.getOrNull()
                         }
                     }.awaitAll()
@@ -141,8 +162,12 @@ class LspManager(
                     instances.map { (key, instance) ->
                         async {
                             instance.client.registerEditor(documentUri, editorState)
-                            if (!instance.capabilities.supportsDidOpenClose()) return@async
+                            if (!instance.capabilities.supportsDidOpenClose()) {
+                                Log.w("LspManager", "Server ${key.languageId} does not support didOpenClose, skipping didOpen")
+                                return@async
+                            }
                             try {
+                                Log.d("LspManager", "Sending didOpen for $documentUri")
                                 withTimeoutOrNull(SERVER_CALL_TIMEOUT_MS.milliseconds) {
                                     instance.server.textDocument.didOpen(
                                         DidOpenTextDocumentParams(
@@ -154,8 +179,9 @@ class LspManager(
                                             )
                                         )
                                     )
-                                }
+                                } ?: Log.w("LspManager", "didOpen timed out for $documentUri")
                             } catch (e: Exception) {
+                                Log.e("LspManager", "Error sending didOpen for $documentUri", e)
                                 handleServerError(key, instance, e)
                             }
                         }
@@ -235,7 +261,8 @@ class LspManager(
     private suspend fun ensureServerInstance(
         key: ServerKey,
         provider: LanguageServerProvider,
-        projectUri: Uri?
+        projectUri: Uri?,
+        file: KxFile? = null
     ): ServerInstance {
         return activeServers[key]?.takeIf { !it.isDead } ?: mutexFor(key).withLock {
             activeServers[key]?.takeIf { !it.isDead } ?: run {
@@ -249,7 +276,7 @@ class LspManager(
                 )
                 val server = provider.startServer(client)
 
-                val initParams = createInitializeParams(projectUri?.toFile())
+                val initParams = createInitializeParams(resolveProjectRoot(projectUri, file))
 
                 val initializeResult = server.initialize(initParams)
                 server.initialized(InitializedParams)
