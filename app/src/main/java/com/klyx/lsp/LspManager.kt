@@ -199,6 +199,19 @@ class LspManager(
                     }
                 }
 
+                // Safety net: while the tab stays open, keep re-pulling so semantic
+                // diagnostics that only become ready after analysis completes surface
+                // even if the server never sends a workspace/diagnostic/refresh.
+                scope.launch {
+                    while (editorUris.containsKey(tabId)) {
+                        delay(10_000)
+                        if (!editorUris.containsKey(tabId)) break
+                        instances.forEach { (_, instance) ->
+                            runCatching { instance.client.pullDiagnostics(instance.server, documentUri) }
+                        }
+                    }
+                }
+
                 withContext(Dispatchers.Main) {
                     val lspLang = LspLanguage(this@LspManager, baseLanguage, tabId, documentUri)
                     editorState.editorLanguage = lspLang
@@ -293,7 +306,8 @@ class LspManager(
                     diagnosticsAggregator,
                     activityStore,
                     key.providerId,
-                    onRefreshInlayHints = { refreshInlayHintsForServer(key) }
+                    onRefreshInlayHints = { refreshInlayHintsForServer(key) },
+                    onRefreshDiagnostics = { refreshDiagnosticsForServer(key) }
                 )
                 val server = provider.startServer(client)
 
@@ -541,6 +555,20 @@ class LspManager(
             // Invalidate the cache so an identical-to-last result still gets applied.
             cachedInlayHints.remove(tabId)
             requestInlayHint(tabId, state, state.cursor.leftLine)
+        }
+    }
+
+    /** Re-pulls diagnostics for every tab served by [key]. Invoked when the server
+     * requests a refresh (`workspace/diagnostic/refresh`), i.e. when its analysis
+     * has advanced and new diagnostics are available. */
+    private fun refreshDiagnosticsForServer(key: ServerKey) {
+        val instance = activeServers[key]?.takeIf { !it.isDead } ?: return
+        editorServerKeys.forEach { (tabId, keysForTab) ->
+            if (key !in keysForTab) return@forEach
+            val uri = editorUris[tabId] ?: return@forEach
+            scope.launch {
+                runCatching { instance.client.pullDiagnostics(instance.server, uri) }
+            }
         }
     }
 

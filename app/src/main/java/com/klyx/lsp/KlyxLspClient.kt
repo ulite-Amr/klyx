@@ -78,7 +78,8 @@ internal class KlyxLspClient(
     private val aggregator: DiagnosticsAggregator,
     private val activityStore: LspActivityStore,
     private val serverName: String = serverId,
-    private val onRefreshInlayHints: () -> Unit = {}
+    private val onRefreshInlayHints: () -> Unit = {},
+    private val onRefreshDiagnostics: () -> Unit = {}
 ) : LanguageClient {
 
     private val registeredUris = ConcurrentHashMap.newKeySet<String>()
@@ -258,7 +259,9 @@ internal class KlyxLspClient(
     }
 
     override suspend fun refreshDiagnostics() {
-        // No-op
+        if (disposed) return
+        Log.d("LspClient", "diagnostic refresh requested by $serverId")
+        onRefreshDiagnostics()
     }
 
     override suspend fun refreshFoldingRanges() {
