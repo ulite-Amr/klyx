@@ -2,6 +2,7 @@ package com.klyx.lsp
 
 import android.util.Log
 import com.klyx.lsp.server.LanguageClient
+import com.klyx.lsp.server.LanguageServer
 import com.klyx.lsp.types.LSPAny
 import com.klyx.lsp.types.LSPArray
 import com.klyx.lsp.types.LSPObject
@@ -42,6 +43,19 @@ internal class DiagnosticsAggregator {
         bySource[uri]?.remove(serverId)
     }
 
+    /** Re-applies the last merged diagnostics for [uri] onto [state]. Needed because
+     * sora's setEditorLanguage() clears the editor's diagnostics, so anything the
+     * server published before the LSP language was installed would otherwise be lost. */
+    fun reapply(uri: String, state: CodeEditorState) {
+        val merged = bySource[uri]?.values
+            ?.flatten()
+            ?.distinctBy { Triple(it.startIndex, it.endIndex, it.detail?.briefMessage) }
+            ?: return
+        val container = DiagnosticsContainer()
+        container.addDiagnostics(merged)
+        state.diagnostics = container
+    }
+
     suspend fun publish(uri: String, serverId: String, regions: List<DiagnosticRegion>) {
         val editorState = editors[uri] ?: return
         val sourceMap = bySource.getOrPut(uri) { ConcurrentHashMap() }
@@ -68,6 +82,7 @@ internal class KlyxLspClient(
 ) : LanguageClient {
 
     private val registeredUris = ConcurrentHashMap.newKeySet<String>()
+    private val diagnosticResultIds = ConcurrentHashMap<String, String?>()
 
     // Once a server is stopped/restarted/crashed the underlying process can keep
     // emitting notifications (rust-analyzer flushes queued window/logMessage traces for
@@ -99,10 +114,37 @@ internal class KlyxLspClient(
     override suspend fun publishDiagnostics(params: PublishDiagnosticsParams) {
         if (disposed) return
         val count = params.diagnostics.size
-        if (count > 0) {
-            Log.d("LspClient", "publishDiagnostics: $serverId -> ${params.uri} ($count items)")
-        }
+        Log.d("LspClient", "publishDiagnostics: $serverId -> ${params.uri} ($count items)")
         publish(params.uri, params.diagnostics)
+    }
+
+    /**
+     * Pulls diagnostics for [uri] via the `textDocument/diagnostic` request.
+     * Some servers (rust-analyzer) gate pushed diagnostics behind a completed
+     * workspace load but still answer pull requests from analysis done so far,
+     * so pulling after didOpen/didChange surfaces errors that would otherwise
+     * stay hidden.
+     */
+    suspend fun pullDiagnostics(server: LanguageServer, uri: String) {
+        if (disposed) return
+        if (aggregator.editorFor(uri) == null) return
+        val previous = diagnosticResultIds[uri]
+        val report = try {
+            server.textDocument.diagnostic(
+                DocumentDiagnosticParams(
+                    textDocument = TextDocumentIdentifier(uri),
+                    identifier = null,
+                    previousResultId = previous
+                )
+            )
+        } catch (e: Exception) {
+            Log.w("LspClient", "diagnostic pull failed for $uri from $serverId: ${e.message}")
+            return
+        }
+        val full = report.full ?: return
+        diagnosticResultIds[uri] = full.resultId
+        publish(uri, full.items)
+        Log.d("LspClient", "Pulled ${full.items.size} diagnostics for $uri from $serverId")
     }
 
     private suspend fun publish(uri: String, diagnostics: List<Diagnostic>) {

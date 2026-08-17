@@ -30,6 +30,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
@@ -129,6 +130,7 @@ class LspManager(
             withContext(Dispatchers.Main) { editorState.editorLanguage = baseLanguage }
             return
         }
+        Log.d("LspManager", "Tab $tabId ${file.name}: ${file.uri} -> $documentUri")
 
         withContext(Dispatchers.IO) {
             try {
@@ -188,9 +190,20 @@ class LspManager(
                     }.awaitAll()
                 }
 
+                // Some servers (rust-analyzer) withhold pushed diagnostics until a
+                // workspace load finishes; pull them so errors appear immediately.
+                instances.forEach { (_, instance) ->
+                    scope.launch {
+                        delay(1500.milliseconds)
+                        runCatching { instance.client.pullDiagnostics(instance.server, documentUri) }
+                    }
+                }
+
                 withContext(Dispatchers.Main) {
                     val lspLang = LspLanguage(this@LspManager, baseLanguage, tabId, documentUri)
                     editorState.editorLanguage = lspLang
+                    // setEditorLanguage() clears previously published diagnostics; reapply.
+                    diagnosticsAggregator.reapply(documentUri, editorState)
 
                     requestInlayHint(tabId, editorState, editorState.cursor.leftLine)
 
@@ -210,7 +223,6 @@ class LspManager(
                                             if (!instance.capabilities.supportsDidChange()) return@async
                                             try {
                                                 withTimeoutOrNull(SERVER_CALL_TIMEOUT_MS.milliseconds) {
-                                                    println("didChange")
                                                     instance.server.textDocument.didChange(
                                                         DidChangeTextDocumentParams(
                                                             textDocument = VersionedTextDocumentIdentifier(
@@ -228,6 +240,15 @@ class LspManager(
                                             }
                                         }
                                     }.awaitAll()
+                                }
+
+                                // Debounced pull so diagnostics follow edits.
+                                keysNow.forEach { key ->
+                                    scope.launch {
+                                        delay(500.milliseconds)
+                                        val instance = activeServers[key]?.takeIf { !it.isDead } ?: return@launch
+                                        runCatching { instance.client.pullDiagnostics(instance.server, documentUri) }
+                                    }
                                 }
 
                                 val line = editorState.cursor.leftLine
@@ -276,7 +297,9 @@ class LspManager(
                 )
                 val server = provider.startServer(client)
 
-                val initParams = createInitializeParams(resolveProjectRoot(projectUri, file))
+                val root = resolveProjectRoot(projectUri, file)
+                Log.d("LspManager", "Server ${key.providerId}: workspace root = ${root?.absolutePath}")
+                val initParams = createInitializeParams(root)
 
                 val initializeResult = server.initialize(initParams)
                 server.initialized(InitializedParams)
