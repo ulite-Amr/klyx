@@ -85,7 +85,7 @@ subprojects {
             }
         }
 
-        publishing {
+        project.publishing {
             repositories {
                 maven {
                     name = "GitHubPackages"
