@@ -38,8 +38,21 @@ data class LspUris(
 fun resolveLspUris(file: KxFile): LspUris {
     val real = resolveRealFile(file.uri) ?: return LspUris(null, null, null)
     val guest = toGuestPath(real)
-    return LspUris(guest.toURI().toString(), real, guest)
+    return LspUris(guest.toLspUri(), real, guest)
 }
+
+/**
+ * Builds the LSP-facing URI for [this] file: the RFC 8089 triple-slash
+ * `file:///path` form.
+ *
+ * [File.toURI] alone yields the authority-less `file:/path` variant (a single
+ * slash — a known JDK quirk), which strict LSP servers (rust-analyzer's `url`
+ * crate) do not match against the `file:///path` documents produced by their
+ * own workspace scan, so an overlay document opened with the wrong form never
+ * matches the file the server analysed from disk. This takes the encoded path
+ * from [File.toURI] and prepends the `file://` authority explicitly.
+ */
+fun File.toLspUri(): String = "file://${toURI().rawSchemeSpecificPart}"
 
 fun resolveRealFile(uri: Uri): File? = when (uri.scheme) {
     "file" -> uri.toFile()

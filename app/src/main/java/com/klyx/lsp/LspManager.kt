@@ -168,6 +168,14 @@ class LspManager(
                                 Log.w("LspManager", "Server ${key.languageId} does not support didOpenClose, skipping didOpen")
                                 return@async
                             }
+                            // Never open the same URI twice on one connection without
+                            // an intervening didClose (rust-analyzer logs "duplicate
+                            // DidOpenTextDocument" and ignores the second open).
+                            if (instance.client.isOpen(documentUri)) {
+                                Log.d("LspManager", "Skipping duplicate didOpen for $documentUri")
+                                return@async
+                            }
+                            instance.client.markOpened(documentUri)
                             try {
                                 Log.d("LspManager", "Sending didOpen for $documentUri")
                                 withTimeoutOrNull(SERVER_CALL_TIMEOUT_MS.milliseconds) {
@@ -340,6 +348,11 @@ class LspManager(
 
                     client.registerEditor(uri, state)
                     if (!newInstance.capabilities.supportsDidOpenClose()) return@forEach
+                    // The new connection starts with an empty open set, so this is a
+                    // no-op guard for editors re-registered on this fresh instance;
+                    // on an existing connection it prevents duplicate didOpen.
+                    if (client.isOpen(uri)) return@forEach
+                    client.markOpened(uri)
                     scope.launch(Dispatchers.IO) {
                         try {
                             withTimeoutOrNull(SERVER_CALL_TIMEOUT_MS.milliseconds) {
