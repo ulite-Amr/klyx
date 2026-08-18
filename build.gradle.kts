@@ -5,6 +5,7 @@ import com.vanniktech.maven.publish.JavadocJar
 import com.vanniktech.maven.publish.KotlinJvm
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
 import com.vanniktech.maven.publish.SourcesJar
+import org.gradle.api.publish.PublishingExtension
 import io.github.treesitter.ktreesitter.plugin.GrammarExtension
 import io.github.treesitter.ktreesitter.plugin.GrammarFilesTask
 import java.util.Locale
@@ -85,7 +86,7 @@ subprojects {
             }
         }
 
-        project.publishing {
+        project.extensions.configure<PublishingExtension> {
             repositories {
                 maven {
                     name = "GitHubPackages"
