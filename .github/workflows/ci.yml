@@ -76,16 +76,28 @@ jobs:
       - name: Prepare TreeSitter bindings
         run: ./gradlew prepareTreeSitter
 
-      - name: Generate signing key
+      - name: Decode CI signing key from secrets
+        env:
+          KEYSTORE_B64: ${{ secrets.KLYX_CI_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.KLYX_CI_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KLYX_CI_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KLYX_CI_KEY_PASSWORD }}
         run: |
-          keytool -genkeypair -v \
-            -keystore /tmp/klyx.keystore \
-            -storepass klyxci123 \
-            -alias klyx \
-            -keypass klyxci123 \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Klyx CI, O=Klyx, C=US"
-          printf 'keyAlias=klyx\nkeyPassword=klyxci123\nstorePassword=klyxci123\n' > /tmp/sign.properties
+          # The signing key MUST stay identical across every run: the APK
+          # signature changes whenever the key changes, so installing a new build
+          # over the previous one fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE,
+          # forcing a full uninstall that wipes the in-app rootfs (rustup +
+          # rust-analyzer). The keystore is therefore committed as a base64 repo
+          # secret (KLYX_CI_KEYSTORE_B64), never regenerated per run. Fail hard
+          # when a secret is missing rather than falling back to a fresh key.
+          test -n "$KEYSTORE_B64" || { echo "::error::missing repo secret KLYX_CI_KEYSTORE_B64 - set it in Settings > Secrets and variables > Actions"; exit 1; }
+          test -n "$STORE_PASSWORD" || { echo "::error::missing repo secret KLYX_CI_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "::error::missing repo secret KLYX_CI_KEY_ALIAS"; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "::error::missing repo secret KLYX_CI_KEY_PASSWORD"; exit 1; }
+          echo "$KEYSTORE_B64" | base64 -d > /tmp/klyx.keystore
+          test -s /tmp/klyx.keystore || { echo "::error::decoded KLYX_CI_KEYSTORE_B64 is empty - secret is corrupt"; exit 1; }
+          printf 'keyAlias=%s\nkeyPassword=%s\nstorePassword=%s\n' "$KEY_ALIAS" "$KEY_PASSWORD" "$STORE_PASSWORD" > /tmp/sign.properties
+          keytool -list -keystore /tmp/klyx.keystore -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null 2>&1 || { echo "::error::keystore/alias/password mismatch - regenerate or re-set the secrets"; exit 1; }
 
       - name: Build Release APK
         run: ./gradlew assembleRelease

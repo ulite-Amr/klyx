@@ -116,6 +116,7 @@ internal class KlyxLspClient(
         if (disposed) return
         val count = params.diagnostics.size
         Log.d("LspClient", "publishDiagnostics: $serverId -> ${params.uri} ($count items)")
+        activityStore.log(serverId, "publishDiagnostics: ${params.uri} ($count items)", LspActivityStore.Severity.Debug)
         publish(params.uri, params.diagnostics)
     }
 
@@ -140,18 +141,21 @@ internal class KlyxLspClient(
             )
         } catch (e: Exception) {
             Log.w("LspClient", "diagnostic pull failed for $uri from $serverId: ${e.message}")
+            activityStore.log(serverId, "diagnostic pull failed for $uri: ${e.message}", LspActivityStore.Severity.Warning)
             return
         }
         val full = report.full ?: return
         diagnosticResultIds[uri] = full.resultId
         publish(uri, full.items)
         Log.d("LspClient", "Pulled ${full.items.size} diagnostics for $uri from $serverId")
+        activityStore.log(serverId, "Pulled ${full.items.size} diagnostics for $uri", LspActivityStore.Severity.Debug)
     }
 
     private suspend fun publish(uri: String, diagnostics: List<Diagnostic>) {
         val editorState = aggregator.editorFor(uri)
         if (editorState == null) {
             Log.w("LspClient", "publishDiagnostics: no editor for uri=$uri (registered: ${registeredUris})")
+            activityStore.log(serverId, "no editor for $uri (registered: ${registeredUris})", LspActivityStore.Severity.Warning)
             return
         }
         val text = editorState.text
@@ -173,6 +177,7 @@ internal class KlyxLspClient(
                 DiagnosticRegion(startIndex, endIndex, severity, 0L, DiagnosticDetail(message))
             }.getOrElse {
                 Log.w("LspClient", "Skipping malformed diagnostic from $serverId: $it")
+                activityStore.log(serverId, "skipping malformed diagnostic: $it", LspActivityStore.Severity.Warning)
                 null
             }
         }
@@ -180,6 +185,7 @@ internal class KlyxLspClient(
         aggregator.publish(uri, serverId, regions)
         if (regions.isNotEmpty()) {
             Log.d("LspClient", "Applied ${regions.size} diagnostics to $uri from $serverId")
+            activityStore.log(serverId, "applied ${regions.size} diagnostics to $uri", LspActivityStore.Severity.Debug)
         }
     }
 
@@ -232,6 +238,7 @@ internal class KlyxLspClient(
 
     override suspend fun configuration(params: ConfigurationParams): List<LSPAny> {
         Log.d("LspClient", "configuration request: ${params.items.map { it.section }}")
+        activityStore.log(serverId, "configuration request: ${params.items.map { it.section }}", LspActivityStore.Severity.Debug)
         return params.items.map { item ->
             when {
                 // rust-analyzer sends workspace/configuration to get its settings
@@ -261,6 +268,7 @@ internal class KlyxLspClient(
     override suspend fun refreshDiagnostics() {
         if (disposed) return
         Log.d("LspClient", "diagnostic refresh requested by $serverId")
+        activityStore.log(serverId, "diagnostic refresh requested by server", LspActivityStore.Severity.Debug)
         onRefreshDiagnostics()
     }
 
