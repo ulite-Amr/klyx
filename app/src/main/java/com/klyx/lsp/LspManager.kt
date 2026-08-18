@@ -268,12 +268,12 @@ class LspManager(
                 )
                 val server = provider.startServer(client)
 
-                // The workspace root is usually a content:// SAF URI with no file
+// The workspace root is usually a content:// SAF URI with no file
                 // path; resolve it to the guest-visible project root, falling back
                 // to walking up from the opened file.
                 val root = resolveProjectRoot(projectUri, file)
                 Log.d("LspManager", "Server ${key.providerId}: workspace root = ${root?.absolutePath}")
-                val initParams = createInitializeParams(root)
+                val initParams = createInitializeParams(root, provider.initializationOptions())
 
                 val initializeResult = server.initialize(initParams)
                 server.initialized(InitializedParams)
