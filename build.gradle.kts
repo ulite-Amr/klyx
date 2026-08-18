@@ -49,7 +49,9 @@ subprojects {
 
             pomFromGradleProperties()
             publishToMavenCentral(automaticRelease = true)
-            signAllPublications()
+            if (providers.gradleProperty("klyx.sign").getOrElse("true").toBoolean()) {
+                signAllPublications()
+            }
 
             pluginManager.withPlugin("com.android.library") {
                 configure(
@@ -80,6 +82,19 @@ subprojects {
                         javadocJar = JavadocJar.Empty()
                     )
                 )
+            }
+        }
+
+        publishing {
+            repositories {
+                maven {
+                    name = "GitHubPackages"
+                    url = uri("https://maven.pkg.github.com/ulite-Amr/klyx")
+                    credentials {
+                        username = System.getenv("GITHUB_ACTOR") ?: ""
+                        password = System.getenv("GITHUB_TOKEN") ?: ""
+                    }
+                }
             }
         }
     }
