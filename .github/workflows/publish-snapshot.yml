@@ -2,6 +2,8 @@ name: Publish snapshot to GitHub Packages
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/test-lsp]
 
 jobs:
   publish:
